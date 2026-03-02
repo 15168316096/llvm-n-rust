@@ -1,6 +1,6 @@
 # llvm-n-rust 安全审计 TODO
 
-> 版本: v1.0 | 最后更新: 2026-03-02 | 状态: 已完成
+> 版本: v1.1 | 最后更新: 2026-03-02 | 状态: 已完成（含 CKB RFCs 交叉审计）
 
 ## 项目概况
 - 语言: Dockerfile
@@ -9,10 +9,11 @@
 - 源文件数: 1（bookworm-18.dockerfile）
 - 现有测试数: 0
 - **CKB 特殊说明**: 本项目为 CKB 智能合约构建工具链，CKB VM (RISC-V) 原生支持非对齐内存访问，因此**内存对齐相关问题不在本次审计范围内**。
+- **CKB RFCs 交叉审计**: 已完成与 [nervosnetwork/rfcs](https://github.com/nervosnetwork/rfcs/tree/master/rfcs) 的规范一致性比对。
 
 ## 审计进度
-- 总 TODO 项: 12
-- ✅ 已完成: 12 | ❌ 发现问题: 7 | ⏳ 待审计: 0
+- 总 TODO 项: 15
+- ✅ 已完成: 15 | ❌ 发现问题: 10 | ⏳ 待审计: 0
 
 ---
 
@@ -131,6 +132,39 @@
 
 ---
 
+## 第 6 章: DIM-SPEC — CKB RFCs 规范一致性
+
+> **审计方法**: 将 Dockerfile 中的工具链配置与 [CKB RFCs](https://github.com/nervosnetwork/rfcs/tree/master/rfcs) 规范进行交叉比对，检查 ISA 扩展、VM 版本兼容性、cycle 优化等方面的一致性。
+
+- [!] 🟠 **AUDIT-SPEC-001**: Rust Target 包含 "A" 原子扩展，限制 CKB VM 兼容性
+  - **关联代码**: bookworm-18.dockerfile:39
+  - **关联 RFCs**: [RFC 0003 (CKB-VM)](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0003-ckb-vm/0003-ckb-vm.md), [RFC 0051 (CKB2023)](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0051-ckb2023/0051-ckb2023.md)
+  - **审计内容**:
+    - Rust target `riscv64imac` 的 "A" (Atomic) 扩展是否与 CKB VM 版本兼容
+    - 编译产物是否可能包含不受支持的原子指令
+  - **现有覆盖**: 无测试
+  - **发现记录**: ❌ RFC 0003 定义 CKB VM v0 使用 `rv64imc`（不含 "A" 扩展），RFC 0051 (CKB2023) 在 VM v2 中才新增 "A" 原子扩展支持。当前 Rust target `riscv64imac-unknown-none-elf` 包含 "A" 扩展，编译产物可能包含 `lr.d`、`sc.d` 等原子指令，这些指令在 CKB VM v0/v1 上会导致非法指令异常。使用此镜像编译的合约**仅兼容 CKB VM v2+**（需使用 `hash_type: "type"` 或 `"data2"`）。
+
+- [x] 🟢 **AUDIT-SPEC-002**: Rust Target 未启用 "B" 位操作扩展
+  - **关联代码**: bookworm-18.dockerfile:39
+  - **关联 RFCs**: [RFC 0033 (CKB VM Version 1)](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0033-ckb-vm-version-1/0033-ckb-vm-version-1.md), [RFC 0014 (VM Cycle Limits)](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0014-vm-cycle-limits/0014-vm-cycle-limits.md)
+  - **审计内容**:
+    - CKB VM v1+ 支持的 B 扩展是否被编译器利用
+    - 未启用 B 扩展对 cycle 消耗的影响
+  - **现有覆盖**: N/A
+  - **发现记录**: ⚠️ CKB VM v1+ 支持 RISC-V B 扩展（位操作指令，每条 1 cycle），但 Rust target `riscv64imac` 不包含 "B" 扩展，编译器不会生成 B 扩展指令。这意味着位操作密集的代码（如密码学运算）无法利用 VM 级别的优化，可能消耗更多 cycles。非安全问题，但影响合约性能。
+
+- [!] 🟡 **AUDIT-SPEC-003**: 未记录目标 CKB VM 版本兼容性
+  - **关联代码**: README.md
+  - **关联 RFCs**: [RFC 0032 (CKB VM Version Selection)](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0032-ckb-vm-version-selection/0032-ckb-vm-version-selection.md), [RFC 0051 (CKB2023)](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0051-ckb2023/0051-ckb2023.md)
+  - **审计内容**:
+    - README 是否说明编译产物兼容的 CKB VM 版本
+    - 是否说明所需的 `hash_type` 配置
+  - **现有覆盖**: N/A
+  - **发现记录**: ❌ README 仅声明 "reproducible build for CKB smart contracts"，未说明编译产物兼容哪些 CKB VM 版本。根据 RFC 0032，开发者需要通过 `hash_type` 选择 VM 版本。考虑到当前 Rust target 包含 "A" 扩展（AUDIT-SPEC-001），合约仅兼容 VM v2+，但这一关键信息缺失。
+
+---
+
 ## 附录 A: 审计执行日志
 | 日期 | 审计项 | 发现摘要 | 状态 |
 |------|--------|---------|------|
@@ -146,11 +180,17 @@
 | 2026-03-02 | AUDIT-CONTAINER-004 | Docker 层数可优化 | ⚠️ 建议改进 |
 | 2026-03-02 | AUDIT-ERRINFO-001 | 下载失败处理不完善 | ⚠️ 建议改进 |
 | 2026-03-02 | AUDIT-MEMORY-001 | 构建资源消耗可控 | ✅ 通过 |
+| 2026-03-02 | AUDIT-SPEC-001 | Rust target "A" 扩展限制 VM 兼容性 (RFC 0003, RFC 0051) | ❌ 发现问题 |
+| 2026-03-02 | AUDIT-SPEC-002 | Rust target 未启用 "B" 扩展 (RFC 0033) | ⚠️ 建议改进 |
+| 2026-03-02 | AUDIT-SPEC-003 | 未记录目标 CKB VM 版本兼容性 (RFC 0032) | ❌ 发现问题 |
 
 ## 附录 B: 新增项跟踪
 | 日期 | 新增项 ID | 来源 | 描述 |
 |------|----------|------|------|
 | 2026-03-02 | AUDIT-LOGIC-001 | AUDIT-DEPS-001 审计中发现 | 版本升级后符号链接后缀未同步更新 |
+| 2026-03-02 | AUDIT-SPEC-001 | CKB RFCs 交叉审计 (RFC 0003, RFC 0051) | Rust target "A" 扩展与 CKB VM v0/v1 不兼容 |
+| 2026-03-02 | AUDIT-SPEC-002 | CKB RFCs 交叉审计 (RFC 0033, RFC 0014) | 未启用 B 扩展，错过 cycle 优化机会 |
+| 2026-03-02 | AUDIT-SPEC-003 | CKB RFCs 交叉审计 (RFC 0032) | README 缺少 CKB VM 版本兼容性文档 |
 
 ## 附录 C: 修复建议
 | 审计项 | 严重级别 | 建议方案 | 修复状态 |
@@ -166,3 +206,6 @@
 | AUDIT-DEPS-004 | 🟢 Low | 指定 cmake 版本号 | ⏳ 可选 |
 | AUDIT-LOGIC-002 | 🟢 Low | 考虑恢复 `make -j$(nproc)` 或提供 ARG 参数化 | ⏳ 可选 |
 | AUDIT-CONTAINER-004 | 🟢 Low | 合并 RUN 层 | ⏳ 可选 |
+| AUDIT-SPEC-001 | 🟠 High | 确认目标 VM 版本，或改用 `riscv64imc` target | ⏳ 待确认 |
+| AUDIT-SPEC-002 | 🟢 Low | 评估启用 B 扩展 target feature | ⏳ 可选 |
+| AUDIT-SPEC-003 | 🟡 Medium | 在 README 中补充 CKB VM 版本兼容性说明 | ⏳ 待修复 |
